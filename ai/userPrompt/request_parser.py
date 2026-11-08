@@ -10,11 +10,13 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional, Union
 
 from dotenv import load_dotenv
-from openai import OpenAI, OpenAIError
+from openai import (APIStatusError, AuthenticationError, OpenAI, OpenAIError,
+                    PermissionDeniedError)
 from pydantic import ValidationError
 
 try:
@@ -79,6 +81,11 @@ JSON_SCHEMA = {
 
 # Последний сработавший режим для каждой модели (экономит холостые вызовы)
 _mode_cache: dict[str, str] = {}
+# Режимы, которые модель не поддерживает (404/400/422) — больше не пробуем
+_unsupported: set[tuple[str, str]] = set()
+# Модели, временно ограниченные по лимитам (429/5xx): до какого момента пропускаем
+_cooldown: dict[str, float] = {}
+COOLDOWN_SECONDS = 60
 
 
 class ParseError(Exception):
@@ -147,9 +154,24 @@ def _call(client, model: str, mode: str, messages: list[dict]) -> str:
 
 def _modes_for(model: str) -> list[str]:
     cached = _mode_cache.get(model)
-    if cached:
-        return [cached] + [m for m in MODES if m != cached]
-    return list(MODES)
+    modes = ([cached] if cached else []) + [m for m in MODES if m != cached]
+    return [m for m in modes if (model, m) not in _unsupported]
+
+
+def _classify(e: OpenAIError) -> str:
+    """fatal — ключ/доступ; mode — режим не поддерживается; model — модель недоступна/лимит."""
+    if isinstance(e, (AuthenticationError, PermissionDeniedError)):
+        return "fatal"
+    if isinstance(e, APIStatusError) and e.status_code in (400, 404, 422):
+        return "mode"
+    return "model"  # 429, 5xx, 402, таймаут, сеть
+
+
+def _order_models(models: list[str]) -> list[str]:
+    now = time.time()
+    ready = [m for m in models if _cooldown.get(m, 0) <= now]
+    cooling = [m for m in models if m not in ready]
+    return ready + cooling  # «остывающие» — в конец, как последний шанс
 
 
 def parse_request(text: str, client: Optional[OpenAI] = None,
@@ -166,8 +188,11 @@ def parse_request(text: str, client: Optional[OpenAI] = None,
     errors: list[str] = []
     calls = 0
 
-    for name in get_models(model):
+    for name in _order_models(get_models(model)):
+        skip_model = False
         for mode in _modes_for(name):
+            if skip_model:
+                break
             messages = base
             for _retry in range(2):  # 2-я попытка — с текстом ошибки
                 if calls >= MAX_CALLS:
@@ -194,7 +219,17 @@ def parse_request(text: str, client: Optional[OpenAI] = None,
                             "строго по описанной схеме, без пояснений."},
                     ]
                 except OpenAIError as e:  # сеть, 429, режим не поддерживается, таймаут
+                    kind = _classify(e)
                     errors.append(f"{name}/{mode}: {type(e).__name__}: {str(e)[:120]}")
-                    log.warning("api error %s/%s: %s", name, mode, e)
-                    break  # следующий режим/модель
+                    log.warning("api error %s/%s (%s): %s", name, mode, kind, e)
+                    if kind == "fatal":
+                        raise ParseError(
+                            "Ошибка доступа к OpenRouter (проверьте OPENROUTER_API_KEY): "
+                            f"{str(e)[:160]}") from e
+                    if kind == "mode":
+                        _unsupported.add((name, mode))  # пробуем другой режим
+                    else:
+                        _cooldown[name] = time.time() + COOLDOWN_SECONDS
+                        skip_model = True  # сразу следующая модель
+                    break
     raise ParseError("Не удалось разобрать запрос: " + "; ".join(errors[-3:]))

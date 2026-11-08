@@ -3,7 +3,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from openai import OpenAIError
+try:  # разные версии openai зависят от httpx или httpx2
+    import httpx
+except ImportError:  # pragma: no cover
+    import httpx2 as httpx
+from openai import AuthenticationError, NotFoundError, OpenAIError, RateLimitError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "userPrompt"))
@@ -15,6 +19,13 @@ from request_parser import ParseError, parse_request  # noqa: E402
 @pytest.fixture(autouse=True)
 def _clear_cache():
     request_parser._mode_cache.clear()
+    request_parser._unsupported.clear()
+    request_parser._cooldown.clear()
+
+
+def http_error(cls, code):
+    resp = httpx.Response(code, request=httpx.Request("POST", "http://x"))
+    return cls("err", response=resp, body=None)
 
 
 class FakeClient:
@@ -85,7 +96,7 @@ GOOD = '{"budget": 70000, "tasks": ["Study"], "resolution": null, "preferences":
 
 
 def test_api_error_falls_back_to_next_mode_and_remembers():
-    c = FakeClient([OpenAIError("response_format unsupported"), GOOD])
+    c = FakeClient([http_error(NotFoundError, 404), GOOD])
     assert parse_request("x", client=c, model="m").budget == 70000
     assert c.history[1]["response_format"] == {"type": "json_object"}
     assert request_parser._mode_cache["m"] == "json_object"
@@ -95,13 +106,13 @@ def test_api_error_falls_back_to_next_mode_and_remembers():
 
 
 def test_fallback_to_next_model():
-    c = FakeClient([OpenAIError("429")] * 3 + [GOOD])
+    c = FakeClient([http_error(RateLimitError, 429), GOOD])
     parse_request("x", client=c, model=["bad", "good"])
     assert c.history[-1]["model"] == "good"
 
 
 def test_prompt_mode_has_no_response_format():
-    c = FakeClient([OpenAIError("a"), OpenAIError("b"), GOOD])
+    c = FakeClient([http_error(NotFoundError, 404), http_error(NotFoundError, 404), GOOD])
     parse_request("x", client=c, model="m")
     assert "response_format" not in c.history[2]
 
@@ -183,3 +194,35 @@ def test_heuristics_match_eval_cases():
         assert h.extract_budget(c["q"]) == c["budget"], c["q"]
         assert h.extract_resolution(c["q"]) == c["resolution"], c["q"]
         assert set(h.extract_tasks(c["q"])) == set(c["tasks"]), c["q"]
+
+
+def test_429_skips_remaining_modes_and_cools_down_model():
+    c = FakeClient([http_error(RateLimitError, 429), GOOD])
+    parse_request("x", client=c, model=["busy", "good"])
+    assert c.calls == 2 and c.history[0]["model"] == "busy" and c.history[1]["model"] == "good"
+    c2 = FakeClient([GOOD])  # «busy» в паузе — сразу идём к рабочей модели
+    parse_request("x", client=c2, model=["busy", "good"])
+    assert c2.history[0]["model"] == "good"
+
+
+def test_unsupported_mode_is_not_retried_next_time():
+    c = FakeClient([http_error(NotFoundError, 404), GOOD])
+    parse_request("x", client=c, model="m")
+    c2 = FakeClient([GOOD])
+    parse_request("x", client=c2, model="m")
+    assert c2.history[0]["response_format"] == {"type": "json_object"}
+    assert ("m", "json_schema") in request_parser._unsupported
+
+
+def test_auth_error_is_fatal_and_immediate():
+    c = FakeClient([http_error(AuthenticationError, 401)])
+    with pytest.raises(ParseError, match="OPENROUTER_API_KEY"):
+        parse_request("x", client=c, model=["a", "b"])
+    assert c.calls == 1
+
+
+def test_six_models_all_rate_limited_reach_last():
+    models = [f"m{i}" for i in range(6)]
+    c = FakeClient([http_error(RateLimitError, 429)] * 5 + [GOOD])
+    parse_request("x", client=c, model=models)
+    assert c.history[-1]["model"] == "m5"
