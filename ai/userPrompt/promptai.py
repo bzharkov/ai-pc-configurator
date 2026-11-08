@@ -1,4 +1,5 @@
 """CLI для ручной проверки: python ai/userPrompt/promptai.py "ПК для игр в 2К до 120к"."""
+import logging
 import sys
 from pathlib import Path
 
@@ -8,7 +9,13 @@ OUTPUT = Path(__file__).with_name("AIRequest.json")
 
 
 def main() -> int:
-    query = " ".join(sys.argv[1:]) or input("Опишите, какой ПК нужен: ")
+    args = [a for a in sys.argv[1:] if a != "-v"]
+    if "-v" in sys.argv:  # показать, какая модель ответила и что вернула
+        logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(message)s")
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("openai").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+    query = " ".join(args) or input("Опишите, какой ПК нужен: ")
     try:
         req = parse_request(query)
     except ParseError as e:
