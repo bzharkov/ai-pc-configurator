@@ -4,5 +4,9 @@
         "Games",
         "3D"
     ],
-    "preferences": "Only popular brands, water cooling, white aquarium case"
+    "resolution": null,
+    "preferences": "Only popular brands, water cooling, white aquarium case",
+    "missing": [
+        "budget"
+    ]
 }

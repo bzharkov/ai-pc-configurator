@@ -1,43 +1,25 @@
-import os
-from dotenv import load_dotenv
-from openai import OpenAI
-import json
+"""CLI для ручной проверки: python ai/userPrompt/promptai.py "ПК для игр в 2К до 120к"."""
+import sys
+from pathlib import Path
 
-load_dotenv()
+from request_parser import ParseError, parse_request
 
-api_key = os.getenv('OPENROUTER_API_KEY')
-
-client = OpenAI( 
-    base_url= 'https://openrouter.ai/api/v1/',
-    api_key = api_key
-    )
-system_prompt = """
-Ты — ИИ-парсер параметров для подбора компьютера. 
-Проанализируй текст пользователя и извлеки из него требования.
-Верни ответ СТРОГО в формате JSON со следующими ключами:
-- "budget": число (целое число в рублях, если указано, иначе null)
-- "tasks": массив строк (строго ["Games", "Montage", "Office", "3D"])
-- "preferences": строка (особые пожелания, если есть тоже на английском, по примеру tasks, тип охлаждения [Water/Air], цвет корпуса, бренд, и т.д., если нет — null)
-"""
-
-user_query = input()
-
-response = client.chat.completions.create(
-    model= "openrouter/free",
-    messages=[
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_query},
-    ],
-    response_format={
-        "type": "json_object"
-    }, 
-)
+OUTPUT = Path(__file__).with_name("AIRequest.json")
 
 
-raw_answer = response.choices[0].message.content
-print("Ответ от модели:", raw_answer)
+def main() -> int:
+    query = " ".join(sys.argv[1:]) or input("Опишите, какой ПК нужен: ")
+    try:
+        req = parse_request(query)
+    except ParseError as e:
+        print(f"Ошибка: {e}", file=sys.stderr)
+        return 1
+    OUTPUT.write_text(req.model_dump_json(indent=4), encoding="utf-8")
+    print(req.model_dump_json(indent=4))
+    if req.missing:
+        print(f"Нужно уточнить: {', '.join(req.missing)}")
+    return 0
 
-data_dict = json.loads(raw_answer)
 
-with open("ai/userPrompt/AIRequest.json", "w", encoding="utf-8") as f:
-    json.dump(data_dict, f, ensure_ascii=False, indent=4)
+if __name__ == "__main__":
+    sys.exit(main())
