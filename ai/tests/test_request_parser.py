@@ -99,11 +99,12 @@ GOOD = '{"budget": 70000, "tasks": ["Study"], "resolution": null, "preferences":
 def test_api_error_falls_back_to_next_mode_and_remembers():
     c = FakeClient([http_error(NotFoundError, 404), GOOD])
     assert parse_request("x", client=c, model="m").budget == 70000
-    assert c.history[1]["response_format"] == {"type": "json_object"}
-    assert request_parser._mode_cache["m"] == "json_object"
+    assert c.history[0]["response_format"] == {"type": "json_object"}
+    assert "response_format" not in c.history[1]  # режим «только промпт»
+    assert request_parser._mode_cache["m"] == "prompt"
     c2 = FakeClient([GOOD])
     parse_request("x", client=c2, model="m")
-    assert c2.history[0]["response_format"] == {"type": "json_object"}  # сразу рабочий режим
+    assert "response_format" not in c2.history[0]  # сразу рабочий режим
 
 
 def test_fallback_to_next_model():
@@ -112,10 +113,15 @@ def test_fallback_to_next_model():
     assert c.history[-1]["model"] == "good"
 
 
-def test_prompt_mode_has_no_response_format():
-    c = FakeClient([http_error(NotFoundError, 404), http_error(NotFoundError, 404), GOOD])
+def test_json_schema_is_opt_in(monkeypatch):
+    c = FakeClient([GOOD])
     parse_request("x", client=c, model="m")
-    assert "response_format" not in c.history[2]
+    assert c.history[0]["response_format"] == {"type": "json_object"}
+    request_parser._mode_cache.clear()
+    monkeypatch.setenv("OPENROUTER_STRICT_SCHEMA", "1")
+    c = FakeClient([GOOD])
+    parse_request("x", client=c, model="m2")
+    assert c.history[0]["response_format"]["type"] == "json_schema"
 
 
 def test_error_feedback_is_sent_on_retry():
@@ -206,13 +212,21 @@ def test_429_skips_remaining_modes_and_cools_down_model():
     assert c2.history[0]["model"] == "good"
 
 
-def test_unsupported_mode_is_not_retried_next_time():
+def test_unsupported_mode_is_not_retried_next_time_and_not_counted():
     c = FakeClient([http_error(NotFoundError, 404), GOOD])
     parse_request("x", client=c, model="m")
+    assert ("m", "json_object") in request_parser._unsupported
     c2 = FakeClient([GOOD])
     parse_request("x", client=c2, model="m")
-    assert c2.history[0]["response_format"] == {"type": "json_object"}
-    assert ("m", "json_schema") in request_parser._unsupported
+    assert "response_format" not in c2.history[0]
+
+
+def test_mode_errors_do_not_use_call_budget():
+    models = [f"m{i}" for i in range(6)]  # у каждой 2 режима -> 12 ошибок «режим не поддерживается»
+    replies = [http_error(NotFoundError, 404)] * 10 + [GOOD]
+    c = FakeClient(replies)
+    parse_request("x", client=c, model=models)
+    assert c.calls == 11
 
 
 def test_auth_error_is_fatal_and_immediate():

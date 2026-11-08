@@ -33,8 +33,8 @@ log = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "openrouter/free"
 MAX_QUERY_LEN = 2000
-MAX_CALLS = 8  # общий лимит обращений к API на один запрос
-MODES = ("json_schema", "json_object", "prompt")
+MAX_CALLS = 10  # лимит обращений к API на один запрос (ошибки «режим не поддерживается» не считаются)
+
 
 SYSTEM_PROMPT = """\
 Ты — парсер параметров для подбора компьютера. Проанализируй текст пользователя
@@ -153,9 +153,17 @@ def _call(client, model: str, mode: str, messages: list[dict]) -> str:
     return choices[0].message.content
 
 
+def _default_modes() -> tuple[str, ...]:
+    # json_schema даёт 404 почти у всех free-моделей и тратит обращение впустую,
+    # а валидацию схемы мы и так делаем в коде. Включается: OPENROUTER_STRICT_SCHEMA=1
+    if os.getenv("OPENROUTER_STRICT_SCHEMA") == "1":
+        return ("json_schema", "json_object", "prompt")
+    return ("json_object", "prompt")
+
+
 def _modes_for(model: str) -> list[str]:
     cached = _mode_cache.get(model)
-    modes = ([cached] if cached else []) + [m for m in MODES if m != cached]
+    modes = ([cached] if cached else []) + [m for m in _default_modes() if m != cached]
     return [m for m in modes if (model, m) not in _unsupported]
 
 
@@ -237,6 +245,7 @@ def parse_request(text: str, client: Optional[OpenAI] = None,
                             f"{str(e)[:160]}") from e
                     if kind == "mode":
                         _unsupported.add((name, mode))  # пробуем другой режим
+                        state["calls"] -= 1  # не расходует лимит обращений
                         break
                     _cooldown[name] = time.time() + COOLDOWN_SECONDS
                     state["rate_limited"] = True
