@@ -59,3 +59,12 @@ def test_empty_and_long():
         parse_request("   ", client=FakeClient([]))
     with pytest.raises(ParseError):
         parse_request("a" * 3000, client=FakeClient([]))
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("50к", 50000), ("120 000 ₽", 120000), ("1.5 млн", 1500000),
+    ("80 тыс", 80000), ("100k", 100000), ("нет", None), (0, None), (75000, 75000),
+])
+def test_budget_formats(raw, expected):
+    from schemas import Requirements
+    assert Requirements(budget=raw).budget == expected

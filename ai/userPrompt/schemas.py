@@ -24,10 +24,16 @@ class Requirements(BaseModel):
         if isinstance(v, (int, float)):
             v = int(v)
         elif isinstance(v, str):
-            digits = re.sub(r"[^\d]", "", v)
-            if not digits:
+            m = re.search(r"(\d[\d\s.,]*)\s*(млн|миллион\w*|тыс\w*|k|к)?", v.lower())
+            if not m:
                 return None
-            v = int(digits)
+            num = m.group(1).strip()
+            suffix = m.group(2) or ""
+            factor = next((f for key, f in (("млн", 1_000_000), ("милл", 1_000_000), ("тыс", 1000), ("k", 1000), ("к", 1000)) if suffix.startswith(key)), 1)
+            if factor > 1:
+                v = int(float(num.replace(" ", "").replace(",", ".")) * factor)
+            else:
+                v = int(re.sub(r"[^\d]", "", num))
         else:
             raise ValueError("budget must be a number")
         if v <= 0:
