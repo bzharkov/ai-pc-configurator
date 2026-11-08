@@ -24,6 +24,26 @@ python ai/userPrompt/promptai.py "ПК для игр в 2К и монтажа д
 ```
 Результат печатается и сохраняется в `ai/userPrompt/AIRequest.json`.
 
+## Устойчивость к ошибкам бесплатных моделей
+- `OPENROUTER_MODELS` — список моделей по приоритету; при сбое берётся следующая.
+- Режимы ответа пробуются по порядку: `json_schema` → `json_object` → только промпт
+  (многие free-модели не поддерживают `response_format`). Рабочий режим запоминается.
+- Невалидный ответ отправляется модели обратно с текстом ошибки (одна попытка исправления).
+- Жёсткий лимит 8 обращений к API на запрос; итоговая ошибка — `ParseError` с причинами.
+- В промпте есть примеры (few-shot) и защита от prompt injection.
+
+Подбор бесплатных моделей:
+```bash
+python ai/eval/list_free_models.py
+```
+
+## Оценка качества (30 эталонных запросов, `ai/eval/cases.json`)
+```bash
+python ai/eval/run_eval.py --models model1:free,model2:free --delay 3
+```
+Показывает точность по `budget`, `tasks`, `resolution`, полное совпадение и число ошибок.
+Запустите для 2–3 моделей и оставьте лучшую первой в `OPENROUTER_MODELS`.
+
 ## Тесты (без сети)
 ```bash
 cd ai && python -m pytest tests
