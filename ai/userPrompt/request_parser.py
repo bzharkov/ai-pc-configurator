@@ -86,6 +86,7 @@ _unsupported: set[tuple[str, str]] = set()
 # Модели, временно ограниченные по лимитам (429/5xx): до какого момента пропускаем
 _cooldown: dict[str, float] = {}
 COOLDOWN_SECONDS = 60
+ROUND_PAUSE = 3  # пауза перед вторым проходом, если упирались в лимиты
 
 
 class ParseError(Exception):
@@ -158,6 +159,11 @@ def _modes_for(model: str) -> list[str]:
     return [m for m in modes if (model, m) not in _unsupported]
 
 
+def _short(e: OpenAIError) -> str:
+    code = getattr(e, "status_code", None)
+    return f"HTTP {code}" if code else type(e).__name__
+
+
 def _classify(e: OpenAIError) -> str:
     """fatal — ключ/доступ; mode — режим не поддерживается; model — модель недоступна/лимит."""
     if isinstance(e, (AuthenticationError, PermissionDeniedError)):
@@ -185,19 +191,21 @@ def parse_request(text: str, client: Optional[OpenAI] = None,
 
     client = client or get_client()
     base = _base_messages(text)
+    models = get_models(model)
     errors: list[str] = []
-    calls = 0
+    state = {"calls": 0, "rate_limited": False}
 
-    for name in _order_models(get_models(model)):
-        skip_model = False
+    def fail() -> ParseError:
+        hint = " Модели временно перегружены, повторите позже." if state["rate_limited"] else ""
+        return ParseError("Не удалось разобрать запрос: " + "; ".join(errors[-3:]) + hint)
+
+    def try_model(name: str) -> Optional[Requirements]:
         for mode in _modes_for(name):
-            if skip_model:
-                break
             messages = base
             for _retry in range(2):  # 2-я попытка — с текстом ошибки
-                if calls >= MAX_CALLS:
-                    raise ParseError("Не удалось разобрать запрос: " + "; ".join(errors[-3:]))
-                calls += 1
+                if state["calls"] >= MAX_CALLS:
+                    raise fail()
+                state["calls"] += 1
                 content = None
                 try:
                     content = _call(client, name, mode, messages)
@@ -209,7 +217,7 @@ def parse_request(text: str, client: Optional[OpenAI] = None,
                     return result
                 except (ValueError, ValidationError) as e:  # включает JSONDecodeError
                     errors.append(f"{name}/{mode}: {str(e)[:120]}")
-                    log.warning("bad answer %s/%s: %s", name, mode, e)
+                    log.warning("bad answer %s/%s: %s", name, mode, str(e)[:200])
                     if content is None:
                         break
                     messages = base + [
@@ -220,16 +228,29 @@ def parse_request(text: str, client: Optional[OpenAI] = None,
                     ]
                 except OpenAIError as e:  # сеть, 429, режим не поддерживается, таймаут
                     kind = _classify(e)
-                    errors.append(f"{name}/{mode}: {type(e).__name__}: {str(e)[:120]}")
-                    log.warning("api error %s/%s (%s): %s", name, mode, kind, e)
+                    errors.append(f"{name}/{mode}: {_short(e)}")
+                    log.warning("api error %s/%s: %s (%s)", name, mode, _short(e), kind)
+                    log.debug("api error details: %s", e)
                     if kind == "fatal":
                         raise ParseError(
                             "Ошибка доступа к OpenRouter (проверьте OPENROUTER_API_KEY): "
                             f"{str(e)[:160]}") from e
                     if kind == "mode":
                         _unsupported.add((name, mode))  # пробуем другой режим
-                    else:
-                        _cooldown[name] = time.time() + COOLDOWN_SECONDS
-                        skip_model = True  # сразу следующая модель
-                    break
-    raise ParseError("Не удалось разобрать запрос: " + "; ".join(errors[-3:]))
+                        break
+                    _cooldown[name] = time.time() + COOLDOWN_SECONDS
+                    state["rate_limited"] = True
+                    return None  # сразу следующая модель
+        return None
+
+    for round_no in range(2):  # 2-й проход — после паузы, если упирались в лимиты
+        if round_no == 1:
+            if not state["rate_limited"]:
+                break
+            time.sleep(ROUND_PAUSE)
+            _cooldown.clear()
+        for name in _order_models(models):
+            result = try_model(name)
+            if result is not None:
+                return result
+    raise fail()

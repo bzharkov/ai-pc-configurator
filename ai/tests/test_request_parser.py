@@ -17,10 +17,11 @@ from request_parser import ParseError, parse_request  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
-def _clear_cache():
+def _clear_cache(monkeypatch):
     request_parser._mode_cache.clear()
     request_parser._unsupported.clear()
     request_parser._cooldown.clear()
+    monkeypatch.setattr(request_parser.time, "sleep", lambda s: None)  # без реальных пауз
 
 
 def http_error(cls, code):
@@ -226,3 +227,16 @@ def test_six_models_all_rate_limited_reach_last():
     c = FakeClient([http_error(RateLimitError, 429)] * 5 + [GOOD])
     parse_request("x", client=c, model=models)
     assert c.history[-1]["model"] == "m5"
+
+
+def test_single_model_rate_limited_gets_second_round():
+    c = FakeClient([http_error(RateLimitError, 429), GOOD])
+    r = parse_request("x", client=c, model="only")
+    assert r.budget == 70000 and c.calls == 2
+
+
+def test_all_rate_limited_gives_clear_message():
+    c = FakeClient([http_error(RateLimitError, 429)] * 4)
+    with pytest.raises(ParseError, match="перегружены"):
+        parse_request("x", client=c, model="only")
+    assert c.calls == 2  # один проход + один повтор, без лишних обращений
