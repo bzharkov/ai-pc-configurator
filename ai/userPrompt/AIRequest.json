@@ -1,11 +1,11 @@
 {
     "budget": null,
     "tasks": [
-        "Montage",
-        "Games"
+        "Games",
+        "3D"
     ],
-    "resolution": "1440p",
-    "preferences": "красивый корпус, игры в 2к",
+    "resolution": null,
+    "preferences": "Only popular brands, water cooling, white aquarium case",
     "missing": [
         "budget"
     ]
