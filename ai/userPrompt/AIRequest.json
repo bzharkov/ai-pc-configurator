@@ -1,12 +1,10 @@
 {
     "budget": null,
-    "tasks": [
-        "Games",
-        "3D"
-    ],
+    "tasks": [],
     "resolution": null,
-    "preferences": "Only popular brands, water cooling, white aquarium case",
+    "preferences": "",
     "missing": [
-        "budget"
+        "budget",
+        "tasks"
     ]
 }
