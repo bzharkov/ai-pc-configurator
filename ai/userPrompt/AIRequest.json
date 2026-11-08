@@ -4,5 +4,9 @@
         "Montage",
         "Games"
     ],
-    "preferences": "красивый корпус, игры в 2к"
+    "resolution": "1440p",
+    "preferences": "красивый корпус, игры в 2к",
+    "missing": [
+        "budget"
+    ]
 }
